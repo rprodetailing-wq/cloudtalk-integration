@@ -47,6 +47,12 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         let transcription = normalizeKey(data, 'transcription') || null;
         let callId = normalizeKey(data, 'call_id') || normalizeKey(data, 'callId') || 'unknown';
 
+        // Check if transcription is invalid (CloudTalk object bug)
+        if (transcription === '[object Object]') {
+            console.log('Transcription is [object Object], marking as null to fetch from API.');
+            transcription = null;
+        }
+
         // Clean up extracted values
         if (typeof phoneNumber === 'string') phoneNumber = phoneNumber.trim();
         if (typeof callId === 'number') callId = String(callId);
@@ -65,19 +71,28 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
                 if (API_KEY && API_SECRET) {
                     const auth = { username: API_KEY, password: API_SECRET };
-                    const callUrl = `https://my.cloudtalk.io/api/calls/${callId}.json`;
+                    // Use index.json with filter because /calls/{id}.json is unreliable
+                    const callUrl = `https://my.cloudtalk.io/api/calls/index.json?call_id=${callId}`;
 
                     const callRes = await axios.get(callUrl, { auth });
-                    const callData = callRes.data.data || callRes.data; // API structure varies
+                    // API returns { responseData: { data: [ ... ] } }
+                    const callList = callRes.data.responseData?.data;
+                    const callData = callList && callList.length > 0 ? callList[0] : null;
 
                     if (callData) {
-                        // Try different fields for phone
-                        phoneNumber = callData.external_number || callData.contact_phone || callData.b_number || callData.a_number;
+                        // Extract phone from various possible locations in the complex object
+                        phoneNumber = callData.Contact?.contact_numbers?.[0] ||
+                            callData.Cdr?.caller_number ||
+                            callData.external_number ||
+                            callData.b_number;
+
                         console.log(`✓ Fetched phone number from API: ${phoneNumber}`);
 
                         // Also might have client name
                         if (!data.contacts) data.contacts = {};
-                        if (callData.contact_name) data.contacts.name = callData.contact_name;
+                        if (callData.Contact?.name) data.contacts.name = callData.Contact.name;
+                    } else {
+                        console.log(`Warning: Call ID ${callId} not found in API list.`);
                     }
                 }
             } catch (err) {
