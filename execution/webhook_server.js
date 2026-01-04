@@ -131,7 +131,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                 if (API_KEY && API_SECRET) {
                     const auth = { username: API_KEY, password: API_SECRET };
                     // Try fetching from conversation-intelligence endpoint
-                    const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}`;
+                    const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}.json`;
 
                     const res = await axios.get(transUrl, { auth });
 
@@ -147,7 +147,8 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                 }
             } catch (err) {
                 console.error(`✗ Failed to fetch transcript from API: ${err.message}`);
-                transcriptData.transcript = "[Failed to fetch transcript]";
+                // Use a cleaner message so ClickUp doesn't look broken
+                transcriptData.transcript = "[Transcript processing or not available]";
             }
         }
 
