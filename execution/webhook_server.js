@@ -37,17 +37,56 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         console.log('RAW WEBHOOK BODY:', JSON.stringify(data, null, 2));
         const logFile = logWebhook(data, 'cloudtalk');
 
-        // Extract key fields
-        const phoneNumber = data.external_number || data.externalNumber || null;
-        const transcription = data.transcription || null;
-        const callId = data.call_id || data.callId || 'unknown';
+        // Extract key fields with robust key matching (handling trimming issues)
+        const normalizeKey = (obj, target) => {
+            const key = Object.keys(obj).find(k => k.trim() === target);
+            return key ? obj[key] : undefined;
+        };
+
+        let phoneNumber = normalizeKey(data, 'external_number') || normalizeKey(data, 'externalNumber') || null;
+        let transcription = normalizeKey(data, 'transcription') || null;
+        let callId = normalizeKey(data, 'call_id') || normalizeKey(data, 'callId') || 'unknown';
+
+        // Clean up extracted values
+        if (typeof phoneNumber === 'string') phoneNumber = phoneNumber.trim();
+        if (typeof callId === 'number') callId = String(callId);
 
         console.log(`Call ID: ${callId}`);
         console.log(`Phone Number: ${phoneNumber}`);
         console.log(`Transcription length: ${transcription ? String(transcription).length : 0} chars`);
 
+        // Robustness: If phone number is missing/invalid but we have a Call ID, fetch call details from API
+        if ((!phoneNumber || phoneNumber.length < 3) && callId !== 'unknown') {
+            console.log(`Phone number invalid/missing (${phoneNumber}). Attempting to fetch call details for ID ${callId}...`);
+            try {
+                const axios = require('axios');
+                const API_KEY = process.env.CLOUDTALK_API_KEY;
+                const API_SECRET = process.env.CLOUDTALK_API_SECRET;
+
+                if (API_KEY && API_SECRET) {
+                    const auth = { username: API_KEY, password: API_SECRET };
+                    const callUrl = `https://my.cloudtalk.io/api/calls/${callId}.json`;
+
+                    const callRes = await axios.get(callUrl, { auth });
+                    const callData = callRes.data.data || callRes.data; // API structure varies
+
+                    if (callData) {
+                        // Try different fields for phone
+                        phoneNumber = callData.external_number || callData.contact_phone || callData.b_number || callData.a_number;
+                        console.log(`✓ Fetched phone number from API: ${phoneNumber}`);
+
+                        // Also might have client name
+                        if (!data.contacts) data.contacts = {};
+                        if (callData.contact_name) data.contacts.name = callData.contact_name;
+                    }
+                }
+            } catch (err) {
+                console.error(`Warning: Could not fetch call details: ${err.message}`);
+            }
+        }
+
         if (!phoneNumber) {
-            console.error('No phone number found in webhook data');
+            console.error('No phone number found in webhook data or API');
             return res.status(400).json({ error: 'Missing phone number' });
         }
 
