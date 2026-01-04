@@ -1,0 +1,21 @@
+{
+  "name": "workspace-2",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "node execution/webhook_server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@chykalophia/clickup-mcp-server": "^4.1.8",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "zod": "^4.3.5"
+  }
+}

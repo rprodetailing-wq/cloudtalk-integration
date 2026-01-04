@@ -1,0 +1,7 @@
+node_modules
+.git
+.tmp
+.env
+npm-debug.log
+test_cloudtalk_api.js
+inspect_clickup.js
