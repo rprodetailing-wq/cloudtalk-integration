@@ -34,6 +34,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         const data = req.body;
 
         // Log the raw webhook
+        console.log('RAW WEBHOOK BODY:', JSON.stringify(data, null, 2));
         const logFile = logWebhook(data, 'cloudtalk');
 
         // Extract key fields
