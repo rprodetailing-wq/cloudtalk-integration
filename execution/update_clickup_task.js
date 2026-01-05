@@ -120,11 +120,17 @@ async function main() {
             // Spawn create_clickup_task.js
             const { spawnSync } = require('child_process');
 
-            const createProcess = spawnSync('node', [
+            const createArgs = [
                 path.join(__dirname, 'create_clickup_task.js'),
                 '--transcript', transcriptPath,
                 '--list-id', listId
-            ], {
+            ];
+
+            if (proposalPath) {
+                createArgs.push('--proposal', proposalPath);
+            }
+
+            const createProcess = spawnSync('node', createArgs, {
                 encoding: 'utf-8',
                 env: process.env
             });

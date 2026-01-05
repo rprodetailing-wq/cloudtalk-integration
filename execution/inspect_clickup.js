@@ -12,9 +12,9 @@ async function main() {
     // Attempt to locate the server module
     let serverPath;
     try {
-        serverPath = require.resolve('@chykalophia/clickup-mcp-server/dist/index.js');
+        serverPath = require.resolve('@chykalophia/clickup-mcp-server/build/index.js');
     } catch (e) {
-        serverPath = path.resolve(__dirname, '../node_modules/@chykalophia/clickup-mcp-server/dist/index.js');
+        serverPath = path.resolve(__dirname, '../node_modules/@chykalophia/clickup-mcp-server/build/index.js');
     }
 
     const transport = new StdioClientTransport({
@@ -71,8 +71,11 @@ async function main() {
             });
             // Log the structure of the first task to see Custom Fields mappings
             if (tasksResult.tasks && tasksResult.tasks.length > 0) {
-                console.log("Sample Task Structure:", JSON.stringify(tasksResult.tasks[0], null, 2));
-                console.log("Task Custom Fields:", JSON.stringify(tasksResult.tasks[0].custom_fields, null, 2));
+                console.log("\n--- Custom Field IDs ---");
+                tasksResult.tasks[0].custom_fields.forEach(cf => {
+                    console.log(`${cf.name}: ${cf.id} (Type: ${cf.type})`);
+                });
+                console.log("------------------------\n");
             } else {
                 console.log("No tasks found in this list.", JSON.stringify(tasksResult, null, 2));
             }

@@ -7,12 +7,16 @@ const { StdioClientTransport } = require("@modelcontextprotocol/sdk/client/stdio
 // Parse arguments
 const args = process.argv.slice(2);
 let transcriptPath = null;
+let proposalPath = null;
 let listId = process.env.CLICKUP_LIST_ID;
 let status = 'lead necontactat'; // Default status
 
 for (let i = 0; i < args.length; i++) {
     if (args[i] === '--transcript') {
         transcriptPath = args[i + 1];
+        i++;
+    } else if (args[i] === '--proposal') {
+        proposalPath = args[i + 1];
         i++;
     } else if (args[i] === '--list-id') {
         listId = args[i + 1];
@@ -128,6 +132,21 @@ async function main() {
                     name: setFieldTool.name,
                     arguments: { task_id: taskId, field_id: TRANSCRIPT_FIELD_ID, value: transcriptText }
                 });
+            }
+
+            // Update Proposal
+            if (proposalPath && fs.existsSync(proposalPath)) {
+                try {
+                    const proposalContent = fs.readFileSync(proposalPath, 'utf8');
+                    const PROPOSAL_FIELD_ID = "8c80cd3c-d8bf-42c7-8f04-baf4066cb8b9"; // ID from tasks_dump.json
+                    console.log(`Setting Proposal`);
+                    await client.callTool({
+                        name: setFieldTool.name,
+                        arguments: { task_id: taskId, field_id: PROPOSAL_FIELD_ID, value: proposalContent }
+                    });
+                } catch (err) {
+                    console.error("Failed to read/set proposal:", err);
+                }
             }
         }
 
