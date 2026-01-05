@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
 const axios = require('axios');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const OpenAI = require('openai');
 
 const app = express();
 app.use(express.json());
@@ -27,55 +27,47 @@ function logWebhook(data, source) {
     return logFile;
 }
 
-// Helper: Transcribe Audio with Gemini
+// Helper: Transcribe Audio with OpenAI Whisper
 async function transcribeAudio(audioUrl) {
-    if (!process.env.GOOGLE_API_KEY) {
-        console.log("Skipping AI Transcription: No GOOGLE_API_KEY found.");
+    if (!process.env.OPENAI_API_KEY) {
+        console.log("Skipping AI Transcription: No OPENAI_API_KEY found.");
         return null;
     }
 
+    const tempAudioPath = path.join(__dirname, '..', '.tmp', `audio_temp_${Date.now()}.mp3`);
+
     try {
         console.log(`Downloading audio for transcription: ${audioUrl}`);
-        const response = await axios.get(audioUrl, { responseType: 'arraybuffer' });
-        const audioBuffer = Buffer.from(response.data);
-        const audioBase64 = audioBuffer.toString('base64');
+        const response = await axios.get(audioUrl, { responseType: 'stream' });
 
-        const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+        const writer = fs.createWriteStream(tempAudioPath);
+        response.data.pipe(writer);
 
-        // Helper to try models in sequence
-        async function tryGenerate(modelName) {
-            console.log(`Trying Gemini Model: ${modelName}...`);
-            const model = genAI.getGenerativeModel({ model: modelName });
-            return await model.generateContent([
-                "Transcribe this phone call recording exactly. Format it clearly with Speaker labels (e.g. Agent, Customer) if possible.",
-                {
-                    inlineData: {
-                        data: audioBase64,
-                        mimeType: "audio/mp3"
-                    }
-                }
-            ]);
-        }
+        await new Promise((resolve, reject) => {
+            writer.on('finish', resolve);
+            writer.on('error', reject);
+        });
 
-        const modelsToTry = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-001", "gemini-pro"];
-        let result = null;
+        console.log(`Sending to OpenAI Whisper...`);
+        const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-        for (const m of modelsToTry) {
-            try {
-                result = await tryGenerate(m);
-                break; // Success
-            } catch (e) {
-                console.log(`Model ${m} failed: ${e.message.split(' ')[0]}...`);
-            }
-        }
+        const transcription = await openai.audio.transcriptions.create({
+            file: fs.createReadStream(tempAudioPath),
+            model: "whisper-1",
+            response_format: "text" // or verbose_json for timestamps
+        });
 
-        if (!result) throw new Error("All Gemini models failed.");
+        console.log(`✓ OpenAI Transcription successful (${transcription.length} chars)`);
 
-        const responseText = result.response.text();
-        console.log(`✓ Gemini Transcription successful (${responseText.length} chars)`);
-        return responseText;
+        // Cleanup temp file
+        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+
+        return transcription;
+
     } catch (error) {
-        console.error("Gemini Transcription failed:", error.message);
+        console.error("OpenAI Transcription failed:", error.message);
+        // Cleanup temp file on error too
+        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
         return null;
     }
 }
@@ -170,8 +162,8 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
         // Strategy to get Transcript content:
         // 1. Webhook (already checked)
-        // 2. CloudTalk API (Text)
-        // 3. Gemini AI Transcription (Audio -> Text)
+        // 2. CloudTalk API (Text) - Quick check
+        // 3. OpenAI Whisper (Audio -> Text)
         // 4. Fallback to Recording Link
 
         if (!transcriptData.transcript || transcriptData.transcript === 'null') {
@@ -193,26 +185,21 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                     } catch (err) { /* ignore */ }
                 }
 
-                // Try fetching Text from CloudTalk API
+                // Try fetching Text from CloudTalk API (Briefly)
                 let fetchedText = null;
                 const idsToTry = [];
                 if (validUuid) idsToTry.push(validUuid);
-                // if (callId) idsToTry.push(callId); // Optimization: Don't try ID, we know 404s are common
 
                 for (const targetId of idsToTry) {
                     const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${targetId}.json`;
-                    // Brief retry
-                    for (let i = 0; i < 2; i++) {
-                        try {
-                            const res = await axios.get(transUrl, { auth });
-                            if (res.data && res.data.text) {
-                                fetchedText = res.data.text;
-                                console.log('✓ Fetched native CloudTalk transcript');
-                                break;
-                            }
-                        } catch (e) { await new Promise(r => setTimeout(r, 1000)); }
-                    }
-                    if (fetchedText) break;
+                    try {
+                        const res = await axios.get(transUrl, { auth });
+                        if (res.data && res.data.text) {
+                            fetchedText = res.data.text;
+                            console.log('✓ Fetched native CloudTalk transcript');
+                            break;
+                        }
+                    } catch (e) { /* ignore 404s */ }
                 }
 
                 if (fetchedText) {
@@ -221,12 +208,12 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             }
         }
 
-        // 3. Gemini AI Transcription (if still no text)
+        // 3. OpenAI Whisper Transcription (if still no text)
         if ((!transcriptData.transcript || transcriptData.transcript === 'null') && transcriptData.recording_link) {
-            console.log("No native transcript. Attempting AI transcription...");
+            console.log("No native transcript. Attempting AI transcription (OpenAI)...");
             const aiText = await transcribeAudio(transcriptData.recording_link);
             if (aiText) {
-                transcriptData.transcript = `[AI Transcription (Gemini)]\n\n${aiText}`;
+                transcriptData.transcript = `[AI Transcription (OpenAI Whisper)]\n\n${aiText}`;
             }
         }
 
@@ -276,6 +263,6 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
-app.get('/', (req, res) => res.send('<h1>CloudTalk to ClickUp Webhook Server</h1><p>Running with AI Transcription Support (Gemini)</p>'));
+app.get('/', (req, res) => res.send('<h1>CloudTalk to ClickUp Webhook Server</h1><p>Running with AI Transcription Support (OpenAI Whisper)</p>'));
 
 app.listen(PORT, () => console.log(`\n🚀 Webhook server running on port ${PORT}`));

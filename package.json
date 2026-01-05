@@ -12,11 +12,11 @@
   "description": "",
   "dependencies": {
     "@chykalophia/clickup-mcp-server": "^4.1.8",
-    "@google/generative-ai": "^0.24.1",
     "@modelcontextprotocol/sdk": "^1.25.1",
     "axios": "^1.13.2",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "openai": "^6.15.0",
     "zod": "^4.3.5"
   }
 }
