@@ -132,10 +132,10 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                 const auth = { username: API_KEY, password: API_SECRET };
                 const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}.json`;
 
-                // Retry logic: 3 attempts with delay
+                // Retry logic: 12 attempts with 10s delay (Total ~2 minutes wait)
                 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                 let attempts = 0;
-                const maxAttempts = 3;
+                const maxAttempts = 12;
 
                 while (attempts < maxAttempts) {
                     attempts++;
@@ -152,14 +152,14 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                         }
                     } catch (err) {
                         if (err.response && err.response.status === 404) {
-                            console.log(`✗ Transcript not found (404) on attempt ${attempts}. Waiting...`);
+                            console.log(`✗ Transcript not found (404) on attempt ${attempts}. Waiting 10s...`);
                         } else {
                             console.error(`✗ API Error: ${err.message}`);
                         }
                     }
 
                     if (attempts < maxAttempts) {
-                        await wait(5000); // Wait 5 seconds between retries
+                        await wait(10000); // Wait 10 seconds between retries
                     }
                 }
 
