@@ -42,7 +42,8 @@ async function transcribeAudio(audioUrl) {
 
         console.log(`Sending to Gemini 1.5 Flash...`);
         const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        // Use -latest alias for better stability/finding
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
         const result = await model.generateContent([
             "Transcribe this phone call recording exactly. Format it clearly with Speaker labels (e.g. Agent, Customer) if possible.",
