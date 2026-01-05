@@ -46,6 +46,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         let phoneNumber = normalizeKey(data, 'external_number') || normalizeKey(data, 'externalNumber') || null;
         let transcription = normalizeKey(data, 'transcription') || null;
         let callId = normalizeKey(data, 'call_id') || normalizeKey(data, 'callId') || 'unknown';
+        let callUuid = normalizeKey(data, 'call_uuid') || normalizeKey(data, 'callUuid') || null;
 
         // Check if transcription is invalid (CloudTalk object bug)
         if (transcription === '[object Object]') {
@@ -58,6 +59,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         if (typeof callId === 'number') callId = String(callId);
 
         console.log(`Call ID: ${callId}`);
+        console.log(`Call UUID: ${callUuid}`);
         console.log(`Phone Number: ${phoneNumber}`);
         console.log(`Transcription length: ${transcription ? String(transcription).length : 0} chars`);
 
@@ -113,6 +115,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
         const transcriptData = {
             id: callId,
+            uuid: callUuid,
             phone_number: phoneNumber,
             client: data.contacts?.name || 'Unknown',
             date: new Date().toISOString(),
@@ -122,7 +125,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
         // If transcript is empty/missing, try fetching from API with retries
         if (!transcriptData.transcript || transcriptData.transcript === 'null') {
-            console.log(`Transcript missing in webhook. Fetching from API for call ${callId}...`);
+            console.log(`Transcript missing in webhook. Fetching from API...`);
 
             const axios = require('axios');
             const API_KEY = process.env.CLOUDTALK_API_KEY;
@@ -130,40 +133,55 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
             if (API_KEY && API_SECRET) {
                 const auth = { username: API_KEY, password: API_SECRET };
-                const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}.json`;
 
-                // Retry logic: 12 attempts with 10s delay (Total ~2 minutes wait)
-                const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
-                let attempts = 0;
-                const maxAttempts = 12;
+                // Strategy: Try numeric ID first, then UUID if available
+                // Many API endpoints prefer UUID for analytics
+                // We will try both if one fails.
+                const idsToTry = [];
+                // UUID preferred for conversation-intelligence
+                if (callUuid) idsToTry.push(callUuid);
+                // Then try numeric ID
+                if (callId && callId !== 'unknown') idsToTry.push(callId);
 
-                while (attempts < maxAttempts) {
-                    attempts++;
-                    try {
-                        console.log(`Attempt ${attempts}/${maxAttempts} to fetch transcript...`);
-                        const res = await axios.get(transUrl, { auth });
+                let fetchedText = null;
 
-                        if (res.data && res.data.text) {
-                            transcriptData.transcript = res.data.text;
-                            console.log(`✓ Fetched transcript from API (${transcriptData.transcript.length} chars)`);
-                            break; // Success
-                        } else {
-                            console.log(`⚠ API returned no text: ${JSON.stringify(res.data)}`);
+                for (const targetId of idsToTry) {
+                    if (!targetId || fetchedText) continue;
+
+                    console.log(`Trying to fetch transcript for ID/UUID: ${targetId}`);
+                    const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${targetId}.json`;
+
+                    // Retry logic: number of attempts per ID
+                    const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                    let attempts = 0;
+                    const maxAttempts = 5; // Reduced per-ID attempts since we try multiple IDs
+
+                    while (attempts < maxAttempts) {
+                        attempts++;
+                        try {
+                            const res = await axios.get(transUrl, { auth });
+                            if (res.data && res.data.text) {
+                                fetchedText = res.data.text;
+                                console.log(`✓ Fetched transcript using ${targetId} (${fetchedText.length} chars)`);
+                                break;
+                            } else {
+                                console.log(`⚠ API returned no text for ${targetId}`);
+                            }
+                        } catch (err) {
+                            if (err.response && err.response.status === 404) {
+                                console.log(`✗ Not found (404) for ${targetId} attempt ${attempts}. Waiting 10s...`);
+                            } else {
+                                console.error(`✗ API Error for ${targetId}: ${err.message}`);
+                            }
                         }
-                    } catch (err) {
-                        if (err.response && err.response.status === 404) {
-                            console.log(`✗ Transcript not found (404) on attempt ${attempts}. Waiting 10s...`);
-                        } else {
-                            console.error(`✗ API Error: ${err.message}`);
-                        }
+                        if (attempts < maxAttempts) await wait(10000);
                     }
-
-                    if (attempts < maxAttempts) {
-                        await wait(10000); // Wait 10 seconds between retries
-                    }
+                    if (fetchedText) break;
                 }
 
-                if (!transcriptData.transcript || transcriptData.transcript === 'null') {
+                if (fetchedText) {
+                    transcriptData.transcript = fetchedText;
+                } else {
                     transcriptData.transcript = "[Transcript processing or not available]";
                     console.log("Giving up on transcript fetch.");
                 }
