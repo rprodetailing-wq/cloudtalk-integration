@@ -40,20 +40,37 @@ async function transcribeAudio(audioUrl) {
         const audioBuffer = Buffer.from(response.data);
         const audioBase64 = audioBuffer.toString('base64');
 
-        console.log(`Sending to Gemini 1.5 Flash...`);
         const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
-        // Use -latest alias for better stability/finding
-        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash-latest" });
 
-        const result = await model.generateContent([
-            "Transcribe this phone call recording exactly. Format it clearly with Speaker labels (e.g. Agent, Customer) if possible.",
-            {
-                inlineData: {
-                    data: audioBase64,
-                    mimeType: "audio/mp3"
+        // Helper to try models in sequence
+        async function tryGenerate(modelName) {
+            console.log(`Trying Gemini Model: ${modelName}...`);
+            const model = genAI.getGenerativeModel({ model: modelName });
+            return await model.generateContent([
+                "Transcribe this phone call recording exactly. Format it clearly with Speaker labels (e.g. Agent, Customer) if possible.",
+                {
+                    inlineData: {
+                        data: audioBase64,
+                        mimeType: "audio/mp3"
+                    }
                 }
+            ]);
+        }
+
+        const modelsToTry = ["gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-pro"];
+        let result = null;
+
+        for (const m of modelsToTry) {
+            try {
+                result = await tryGenerate(m);
+                break; // Success
+            } catch (e) {
+                console.log(`Model ${m} failed: ${e.message.split(' ')[0]}...`);
             }
-        ]);
+        }
+
+        if (!result) throw new Error("All Gemini models failed.");
+
         const responseText = result.response.text();
         console.log(`✓ Gemini Transcription successful (${responseText.length} chars)`);
         return responseText;
