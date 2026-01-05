@@ -6,6 +6,16 @@ const { spawn } = require('child_process');
 const axios = require('axios');
 const OpenAI = require('openai');
 
+// Polyfill for OpenAI SDK in older Node environments
+try {
+    if (!globalThis.File) {
+        const { File } = require('node:buffer');
+        if (File) globalThis.File = File;
+    }
+} catch (e) {
+    console.warn('Failed to polyfill global.File:', e.message);
+}
+
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
