@@ -134,13 +134,32 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             if (API_KEY && API_SECRET) {
                 const auth = { username: API_KEY, password: API_SECRET };
 
-                // Strategy: Try numeric ID first, then UUID if available
-                // Many API endpoints prefer UUID for analytics
-                // We will try both if one fails.
+                // Strategy: 
+                // 1. Try UUID from Webhook
+                // 2. If no UUID, try fetching UUID from Analytics API using Call ID
+                // 3. Try fetching transcript using UUID (preferred) or ID
+
+                let validUuid = callUuid;
+
+                // Step 2: Fetch UUID from Analytics API if missing
+                if (!validUuid && callId && callId !== 'unknown') {
+                    console.log(`UUID missing. Fetching from Analytics API for Call ID ${callId}...`);
+                    try {
+                        const analyticsUrl = `https://analytics-api.cloudtalk.io/api/calls/${callId}`;
+                        const analyticsRes = await axios.get(analyticsUrl, { auth });
+                        if (analyticsRes.data && analyticsRes.data.uuid) {
+                            validUuid = analyticsRes.data.uuid;
+                            console.log(`✓ Fetched UUID from Analytics API: ${validUuid}`);
+                        } else {
+                            console.log("⚠ Analytics API returned no UUID.");
+                        }
+                    } catch (err) {
+                        console.error(`Warning: Failed to fetch UUID from Analytics API: ${err.message}`);
+                    }
+                }
+
                 const idsToTry = [];
-                // UUID preferred for conversation-intelligence
-                if (callUuid) idsToTry.push(callUuid);
-                // Then try numeric ID
+                if (validUuid) idsToTry.push(validUuid);
                 if (callId && callId !== 'unknown') idsToTry.push(callId);
 
                 let fetchedText = null;
@@ -154,7 +173,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                     // Retry logic: number of attempts per ID
                     const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
                     let attempts = 0;
-                    const maxAttempts = 5; // Reduced per-ID attempts since we try multiple IDs
+                    const maxAttempts = 12; // 12 attempts per ID (Total ~2 mins if needed)
 
                     while (attempts < maxAttempts) {
                         attempts++;
