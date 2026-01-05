@@ -45,10 +45,65 @@ async function transcribeAudio(audioUrl) {
     }
 
     const tempAudioPath = path.join(__dirname, '..', '.tmp', `audio_temp_${Date.now()}.mp3`);
+    let browser = null;
 
     try {
-        console.log(`Downloading audio for transcription: ${audioUrl}`);
-        const response = await axios.get(audioUrl, { responseType: 'stream' });
+        console.log(`Resolving audio URL via Puppeteer: ${audioUrl}`);
+
+        // Launch Puppeteer
+        const puppeteer = require('puppeteer');
+        browser = await puppeteer.launch({
+            args: ['--no-sandbox', '--disable-setuid-sandbox'],
+            headless: 'new'
+        });
+        const page = await browser.newPage();
+
+        // Intercept network requests to find the audio file
+        let finalAudioUrl = null;
+        await page.setRequestInterception(true);
+
+        page.on('request', request => {
+            if (['media'].includes(request.resourceType()) || request.url().endsWith('.mp3') || request.url().endsWith('.wav')) {
+                console.log('Intercepted potential audio URL:', request.url());
+                if (!finalAudioUrl) finalAudioUrl = request.url();
+            }
+            request.continue();
+        });
+
+        // Navigate to page
+        console.log('Navigating to page...');
+        try {
+            await page.goto(audioUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+        } catch (e) {
+            console.log('Navigation timeout or error (continuing if URL found):', e.message);
+        }
+
+        // If not found via network, try extracting from DOM
+        if (!finalAudioUrl) {
+            console.log('Searching DOM for audio source...');
+            finalAudioUrl = await page.evaluate(() => {
+                const audio = document.querySelector('audio');
+                if (audio) return audio.src;
+                const source = document.querySelector('source');
+                if (source) return source.src;
+                // fallback regex on body
+                const match = document.body.innerHTML.match(/https:\/\/[^"']+\.(mp3|wav)/);
+                return match ? match[0] : null;
+            });
+        }
+
+        if (!finalAudioUrl) {
+            console.log('❌ Could not find audio URL on page (Login required? or not loaded).');
+            // Try original URL as last resort if it matches file pattern
+            if (audioUrl.match(/\.(mp3|wav)$/)) finalAudioUrl = audioUrl;
+            else throw new Error("Could not extract audio source from page.");
+        }
+
+        console.log(`Downloading audio for transcription from: ${finalAudioUrl}`);
+
+        // Use axios to download the extracted URL (it might be signed S3)
+        // Note: S3 links usually work without cookies if they have query params
+        const response = await axios.get(finalAudioUrl, { responseType: 'stream' });
 
         const writer = fs.createWriteStream(tempAudioPath);
         response.data.pipe(writer);
@@ -64,21 +119,19 @@ async function transcribeAudio(audioUrl) {
         const transcription = await openai.audio.transcriptions.create({
             file: fs.createReadStream(tempAudioPath),
             model: "whisper-1",
-            response_format: "text" // or verbose_json for timestamps
+            response_format: "text"
         });
 
         console.log(`✓ OpenAI Transcription successful (${transcription.length} chars)`);
-
-        // Cleanup temp file
         if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
-
         return transcription;
 
     } catch (error) {
-        console.error("OpenAI Transcription failed:", error.message);
-        // Cleanup temp file on error too
+        console.error("OpenAI Transcription logic failed:", error.message);
         if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
         return null;
+    } finally {
+        if (browser) await browser.close();
     }
 }
 
