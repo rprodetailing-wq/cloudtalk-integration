@@ -57,7 +57,7 @@ async function transcribeAudio(audioUrl) {
             ]);
         }
 
-        const modelsToTry = ["gemini-1.5-flash-001", "gemini-1.5-flash", "gemini-pro"];
+        const modelsToTry = ["gemini-2.0-flash-exp", "gemini-1.5-flash", "gemini-1.5-flash-001", "gemini-pro"];
         let result = null;
 
         for (const m of modelsToTry) {
