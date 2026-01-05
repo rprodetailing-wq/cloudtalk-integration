@@ -88,6 +88,12 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                             callData.external_number ||
                             callData.b_number;
 
+                        // Extract recording link
+                        if (callData.Cdr?.recording_link) {
+                            data.recording_link = callData.Cdr.recording_link;
+                            console.log(`✓ Fetched recording link: ${data.recording_link}`);
+                        }
+
                         console.log(`✓ Fetched phone number from API: ${phoneNumber}`);
 
                         // Also might have client name
@@ -120,6 +126,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             client: data.contacts?.name || 'Unknown',
             date: new Date().toISOString(),
             transcript: typeof transcription === 'string' ? transcription : JSON.stringify(transcription),
+            recording_link: data.recording_link || null,
             raw: data
         };
 
@@ -200,14 +207,20 @@ app.post('/cloudtalk/transcription', async (req, res) => {
 
                 if (fetchedText) {
                     transcriptData.transcript = fetchedText;
-                } else {
-                    transcriptData.transcript = "[Transcript processing or not available]";
-                    console.log("Giving up on transcript fetch.");
                 }
-
             } else {
                 console.log("⚠ Cannot fetch from API: Missing Credentials");
+            }
+        }
+
+        // Final Fallback: If still no transcript, check for recording link
+        if (!transcriptData.transcript || transcriptData.transcript === 'null') {
+            if (transcriptData.recording_link) {
+                console.log("Using Recording Link as fallback for transcript.");
+                transcriptData.transcript = `[Transcript not found via API]\n\n**Backup Recording Link:** ${transcriptData.recording_link}`;
+            } else {
                 transcriptData.transcript = "[Transcript processing or not available]";
+                console.log("Giving up on transcript fetch. No recording link available.");
             }
         }
 
