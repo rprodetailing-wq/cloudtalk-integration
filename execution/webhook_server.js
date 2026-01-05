@@ -120,34 +120,56 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             raw: data
         };
 
-        // If transcript is empty/missing, try fetching from API
+        // If transcript is empty/missing, try fetching from API with retries
         if (!transcriptData.transcript || transcriptData.transcript === 'null') {
             console.log(`Transcript missing in webhook. Fetching from API for call ${callId}...`);
-            try {
-                const axios = require('axios');
-                const API_KEY = process.env.CLOUDTALK_API_KEY;
-                const API_SECRET = process.env.CLOUDTALK_API_SECRET;
 
-                if (API_KEY && API_SECRET) {
-                    const auth = { username: API_KEY, password: API_SECRET };
-                    // Try fetching from conversation-intelligence endpoint
-                    const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}.json`;
+            const axios = require('axios');
+            const API_KEY = process.env.CLOUDTALK_API_KEY;
+            const API_SECRET = process.env.CLOUDTALK_API_SECRET;
 
-                    const res = await axios.get(transUrl, { auth });
+            if (API_KEY && API_SECRET) {
+                const auth = { username: API_KEY, password: API_SECRET };
+                const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}.json`;
 
-                    if (res.data && res.data.text) {
-                        transcriptData.transcript = res.data.text;
-                        console.log(`✓ Fetched transcript from API (${transcriptData.transcript.length} chars)`);
-                    } else {
-                        console.log(`⚠ API returned no text: ${JSON.stringify(res.data)}`);
-                        transcriptData.transcript = "[No transcript available from API]";
+                // Retry logic: 3 attempts with delay
+                const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+                let attempts = 0;
+                const maxAttempts = 3;
+
+                while (attempts < maxAttempts) {
+                    attempts++;
+                    try {
+                        console.log(`Attempt ${attempts}/${maxAttempts} to fetch transcript...`);
+                        const res = await axios.get(transUrl, { auth });
+
+                        if (res.data && res.data.text) {
+                            transcriptData.transcript = res.data.text;
+                            console.log(`✓ Fetched transcript from API (${transcriptData.transcript.length} chars)`);
+                            break; // Success
+                        } else {
+                            console.log(`⚠ API returned no text: ${JSON.stringify(res.data)}`);
+                        }
+                    } catch (err) {
+                        if (err.response && err.response.status === 404) {
+                            console.log(`✗ Transcript not found (404) on attempt ${attempts}. Waiting...`);
+                        } else {
+                            console.error(`✗ API Error: ${err.message}`);
+                        }
                     }
-                } else {
-                    console.log("⚠ Cannot fetch from API: Missing Credentials");
+
+                    if (attempts < maxAttempts) {
+                        await wait(5000); // Wait 5 seconds between retries
+                    }
                 }
-            } catch (err) {
-                console.error(`✗ Failed to fetch transcript from API: ${err.message}`);
-                // Use a cleaner message so ClickUp doesn't look broken
+
+                if (!transcriptData.transcript || transcriptData.transcript === 'null') {
+                    transcriptData.transcript = "[Transcript processing or not available]";
+                    console.log("Giving up on transcript fetch.");
+                }
+
+            } else {
+                console.log("⚠ Cannot fetch from API: Missing Credentials");
                 transcriptData.transcript = "[Transcript processing or not available]";
             }
         }
