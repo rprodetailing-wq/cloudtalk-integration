@@ -50,7 +50,9 @@ async function transcribeAudio(audioUrl) {
     try {
         console.log(`Resolving audio URL via Puppeteer: ${audioUrl}`);
 
-        const puppeteer = require('puppeteer');
+        const puppeteer = require('puppeteer-extra');
+        const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+        puppeteer.use(StealthPlugin());
         browser = await puppeteer.launch({
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
             headless: 'new'
@@ -62,7 +64,7 @@ async function transcribeAudio(audioUrl) {
             console.log('Logging in to CloudTalk Dashboard...');
             try {
                 // Navigate to Dashboard Login (More stable than my.cloudtalk.io redirect)
-                await page.goto('https://dashboard.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 30000 });
+                await page.goto('https://dashboard.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 60000 });
 
                 // Wait for selectors using robust data attributes
                 // Fallback to type/placeholder if data-test-id is missing
@@ -71,10 +73,10 @@ async function transcribeAudio(audioUrl) {
                 const submitSelector = 'button[type="submit"]';
 
                 try {
-                    await page.waitForSelector(emailSelector, { timeout: 10000 });
+                    await page.waitForSelector(emailSelector, { timeout: 30000 });
                 } catch (e) {
                     console.log("Standard selector failed, trying broad input wait...");
-                    await page.waitForSelector('input[type="text"]', { timeout: 5000 });
+                    await page.waitForSelector('input[type="text"]', { timeout: 10000 });
                 }
 
                 // Type Credentials
@@ -84,12 +86,18 @@ async function transcribeAudio(audioUrl) {
 
                 // Click Login
                 await Promise.all([
-                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }),
                     page.click(submitSelector)
                 ]);
                 console.log('✓ Login submitted. Navigation complete.');
             } catch (e) {
-                console.warn(`Login attempt failed (continuing anonymously just in case): ${e.message}`);
+                console.warn(`Login attempt failed: ${e.message}`);
+                try {
+                    const title = await page.title();
+                    console.log(`[DEBUG] Page Title: ${title}`);
+                    const content = await page.content();
+                    console.log(`[DEBUG] Page Content: ${content.substring(0, 500)}...`);
+                } catch (err) { }
             }
         } else {
             console.warn('No CloudTalk credentials in .env. Attempting public access (likely to fail).');
@@ -112,7 +120,7 @@ async function transcribeAudio(audioUrl) {
         // Navigate to recording page
         console.log(`Navigating to recording page: ${audioUrl}`);
         try {
-            await page.goto(audioUrl, { waitUntil: 'networkidle2', timeout: 30000 });
+            await page.goto(audioUrl, { waitUntil: 'networkidle2', timeout: 60000 });
         } catch (e) {
             console.log('Navigation timeout or error (continuing if URL found):', e.message);
         }
