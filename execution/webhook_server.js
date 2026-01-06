@@ -61,27 +61,35 @@ async function transcribeAudio(audioUrl) {
         if (process.env.CLOUDTALK_USER && process.env.CLOUDTALK_PASS) {
             console.log('Logging in to CloudTalk Dashboard...');
             try {
-                await page.goto('https://my.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 30000 });
+                // Navigate to Dashboard Login (More stable than my.cloudtalk.io redirect)
+                await page.goto('https://dashboard.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 30000 });
 
-                // Wait for selectors
-                await page.waitForSelector('input[name="email"]', { timeout: 10000 });
+                // Wait for selectors using robust data attributes
+                // Fallback to type/placeholder if data-test-id is missing
+                const emailSelector = 'input[data-test-id="EmailField"]';
+                const passSelector = 'input[data-test-id="PasswordField"]';
+                const submitSelector = 'button[type="submit"]';
+
+                try {
+                    await page.waitForSelector(emailSelector, { timeout: 10000 });
+                } catch (e) {
+                    console.log("Standard selector failed, trying broad input wait...");
+                    await page.waitForSelector('input[type="text"]', { timeout: 5000 });
+                }
 
                 // Type Credentials
-                await page.type('input[name="email"]', process.env.CLOUDTALK_USER);
-                await page.type('input[name="password"]', process.env.CLOUDTALK_PASS);
+                // Use type() with delay to mimic human behavior (helps bot detection)
+                await page.type(emailSelector, process.env.CLOUDTALK_USER, { delay: 50 });
+                await page.type(passSelector, process.env.CLOUDTALK_PASS, { delay: 50 });
 
                 // Click Login
                 await Promise.all([
                     page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
-                    page.click('button[type="submit"]')
+                    page.click(submitSelector)
                 ]);
                 console.log('✓ Login submitted. Navigation complete.');
-
-                // Optional: Verify if login failed (check for error message)
-                // But for now assume success if we navigated
             } catch (e) {
                 console.warn(`Login attempt failed (continuing anonymously just in case): ${e.message}`);
-                // Capture screenshot on failure if possible?
             }
         } else {
             console.warn('No CloudTalk credentials in .env. Attempting public access (likely to fail).');
