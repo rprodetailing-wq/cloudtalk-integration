@@ -254,116 +254,126 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             return res.status(400).json({ error: 'Missing phone number' });
         }
 
-        // Prepare transcript data
-        const transcriptDir = path.join(__dirname, '..', '.tmp', 'transcripts');
-        if (!fs.existsSync(transcriptDir)) fs.mkdirSync(transcriptDir, { recursive: true });
+        // --- ASYNC PROCESSING START ---
+        // Respond immediately to prevent CloudTalk timeout
+        res.status(202).json({ success: true, message: 'Processing started', callId });
 
-        const transcriptData = {
-            id: callId,
-            uuid: callUuid,
-            phone_number: phoneNumber,
-            client: data.contacts?.name || 'Unknown',
-            date: new Date().toISOString(),
-            transcript: typeof transcription === 'string' ? transcription : JSON.stringify(transcription),
-            recording_link: data.recording_link || null,
-            raw: data
-        };
+        // Continue processing in background
+        (async () => {
+            console.log('Starting background processing for callId:', callId);
 
-        // Strategy to get Transcript content:
-        // 1. Webhook (already checked)
-        // 2. CloudTalk API (Text) - Quick check
-        // 3. OpenAI Whisper (Audio -> Text)
-        // 4. Fallback to Recording Link
+            // Prepare transcript data
+            const transcriptDir = path.join(__dirname, '..', '.tmp', 'transcripts');
+            if (!fs.existsSync(transcriptDir)) fs.mkdirSync(transcriptDir, { recursive: true });
 
-        if (!transcriptData.transcript || transcriptData.transcript === 'null') {
-            console.log(`Transcript text missing. Starting retrieval strategy...`);
+            const transcriptData = {
+                id: callId,
+                uuid: callUuid,
+                phone_number: phoneNumber,
+                client: data.contacts?.name || 'Unknown',
+                date: new Date().toISOString(),
+                transcript: typeof transcription === 'string' ? transcription : JSON.stringify(transcription),
+                recording_link: data.recording_link || null,
+                raw: data
+            };
 
-            const API_KEY = process.env.CLOUDTALK_API_KEY;
-            const API_SECRET = process.env.CLOUDTALK_API_SECRET;
+            // Strategy to get Transcript content:
+            // 1. Webhook (already checked)
+            // 2. CloudTalk API (Text) - Quick check
+            // 3. OpenAI Whisper (Audio -> Text)
+            // 4. Fallback to Recording Link
 
-            if (API_KEY && API_SECRET) {
-                const auth = { username: API_KEY, password: API_SECRET };
-                let validUuid = callUuid;
+            if (!transcriptData.transcript || transcriptData.transcript === 'null') {
+                console.log(`Transcript text missing. Starting retrieval strategy...`);
 
-                // 2. Try fetching UUID from Analytics to ask CloudTalk API for Text
-                if (!validUuid && callId && callId !== 'unknown') {
-                    try {
-                        const analyticsUrl = `https://analytics-api.cloudtalk.io/api/calls/${callId}`;
-                        const analyticsRes = await axios.get(analyticsUrl, { auth });
-                        if (analyticsRes.data && analyticsRes.data.uuid) validUuid = analyticsRes.data.uuid;
-                    } catch (err) { /* ignore */ }
-                }
+                const API_KEY = process.env.CLOUDTALK_API_KEY;
+                const API_SECRET = process.env.CLOUDTALK_API_SECRET;
 
-                // Try fetching Text from CloudTalk API (Briefly)
-                let fetchedText = null;
-                const idsToTry = [];
-                if (validUuid) idsToTry.push(validUuid);
+                if (API_KEY && API_SECRET) {
+                    const auth = { username: API_KEY, password: API_SECRET };
+                    let validUuid = callUuid;
 
-                for (const targetId of idsToTry) {
-                    const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${targetId}.json`;
-                    try {
-                        const res = await axios.get(transUrl, { auth });
-                        if (res.data && res.data.text) {
-                            fetchedText = res.data.text;
-                            console.log('✓ Fetched native CloudTalk transcript');
-                            break;
-                        }
-                    } catch (e) { /* ignore 404s */ }
-                }
+                    // 2. Try fetching UUID from Analytics to ask CloudTalk API for Text
+                    if (!validUuid && callId && callId !== 'unknown') {
+                        try {
+                            const analyticsUrl = `https://analytics-api.cloudtalk.io/api/calls/${callId}`;
+                            const analyticsRes = await axios.get(analyticsUrl, { auth });
+                            if (analyticsRes.data && analyticsRes.data.uuid) validUuid = analyticsRes.data.uuid;
+                        } catch (err) { /* ignore */ }
+                    }
 
-                if (fetchedText) {
-                    transcriptData.transcript = fetchedText;
+                    // Try fetching Text from CloudTalk API (Briefly)
+                    let fetchedText = null;
+                    const idsToTry = [];
+                    if (validUuid) idsToTry.push(validUuid);
+
+                    for (const targetId of idsToTry) {
+                        const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${targetId}.json`;
+                        try {
+                            const res = await axios.get(transUrl, { auth });
+                            if (res.data && res.data.text) {
+                                fetchedText = res.data.text;
+                                console.log('✓ Fetched native CloudTalk transcript');
+                                break;
+                            }
+                        } catch (e) { /* ignore 404s */ }
+                    }
+
+                    if (fetchedText) {
+                        transcriptData.transcript = fetchedText;
+                    }
                 }
             }
-        }
 
-        // 3. OpenAI Whisper Transcription (if still no text)
-        if ((!transcriptData.transcript || transcriptData.transcript === 'null') && transcriptData.recording_link) {
-            console.log("No native transcript. Attempting AI transcription (OpenAI)...");
-            const aiText = await transcribeAudio(transcriptData.recording_link);
-            if (aiText) {
-                transcriptData.transcript = `[AI Transcription (OpenAI Whisper)]\n\n${aiText}`;
+            // 3. OpenAI Whisper Transcription (if still no text)
+            if ((!transcriptData.transcript || transcriptData.transcript === 'null') && transcriptData.recording_link) {
+                console.log("No native transcript. Attempting AI transcription (OpenAI)...");
+                const aiText = await transcribeAudio(transcriptData.recording_link);
+                if (aiText) {
+                    transcriptData.transcript = `[AI Transcription (OpenAI Whisper)]\n\n${aiText}`;
+                }
             }
-        }
 
-        // 4. Fallback to Recording Link
-        if (!transcriptData.transcript || transcriptData.transcript === 'null') {
-            if (transcriptData.recording_link) {
-                console.log("Using Recording Link as fallback.");
-                transcriptData.transcript = `[Transcript not available]\n\n**Backup Recording Link:** ${transcriptData.recording_link}`;
-            } else {
-                transcriptData.transcript = "[Transcript processing or not available]";
+            // 4. Fallback to Recording Link
+            if (!transcriptData.transcript || transcriptData.transcript === 'null') {
+                if (transcriptData.recording_link) {
+                    console.log("Using Recording Link as fallback.");
+                    transcriptData.transcript = `[Transcript not available]\n\n**Backup Recording Link:** ${transcriptData.recording_link}`;
+                } else {
+                    transcriptData.transcript = "[Transcript processing or not available]";
+                }
             }
-        }
 
-        const transcriptFile = path.join(transcriptDir, `transcript_${callId}.json`);
-        fs.writeFileSync(transcriptFile, JSON.stringify(transcriptData, null, 2));
-        console.log(`Transcript saved: ${transcriptFile}`);
+            const transcriptFile = path.join(transcriptDir, `transcript_${callId}.json`);
+            fs.writeFileSync(transcriptFile, JSON.stringify(transcriptData, null, 2));
+            console.log(`Transcript saved: ${transcriptFile}`);
 
-        // Generate proposal
-        const proposalDir = path.join(__dirname, '..', '.tmp', 'proposals');
-        if (!fs.existsSync(proposalDir)) fs.mkdirSync(proposalDir, { recursive: true });
+            // Generate proposal
+            const proposalDir = path.join(__dirname, '..', '.tmp', 'proposals');
+            if (!fs.existsSync(proposalDir)) fs.mkdirSync(proposalDir, { recursive: true });
 
-        const proposalContent = `# Call Proposal\n\n**Call ID:** ${callId}\n**Phone:** ${phoneNumber}\n**Date:** ${new Date().toLocaleDateString()}\n\n## Transcript Summary\n\n${transcriptData.transcript}\n\n## Next Steps\n\n- Follow up with customer\n- Document requirements\n- Prepare quote if needed`;
+            const proposalContent = `# Call Proposal\n\n**Call ID:** ${callId}\n**Phone:** ${phoneNumber}\n**Date:** ${new Date().toLocaleDateString()}\n\n## Transcript Summary\n\n${transcriptData.transcript}\n\n## Next Steps\n\n- Follow up with customer\n- Document requirements\n- Prepare quote if needed`;
 
-        const proposalFile = path.join(proposalDir, `proposal_${callId}.md`);
-        fs.writeFileSync(proposalFile, proposalContent);
+            const proposalFile = path.join(proposalDir, `proposal_${callId}.md`);
+            fs.writeFileSync(proposalFile, proposalContent);
 
-        // Spawn ClickUp Update
-        console.log('Running ClickUp update...');
-        const updateProcess = spawn('node', [
-            path.join(__dirname, 'update_clickup_task.js'),
-            '--transcript', transcriptFile,
-            '--proposal', proposalFile
-        ], {
-            cwd: path.join(__dirname, '..'),
-            env: process.env
-        });
+            // Spawn ClickUp Update
+            console.log('Running ClickUp update...');
+            const updateProcess = spawn('node', [
+                path.join(__dirname, 'update_clickup_task.js'),
+                '--transcript', transcriptFile,
+                '--proposal', proposalFile
+            ], {
+                cwd: path.join(__dirname, '..'),
+                env: process.env
+            });
 
-        updateProcess.stdout.on('data', d => console.log(`[ClickUp] ${d.toString().trim()}`));
-        updateProcess.stderr.on('data', d => console.error(`[ClickUp Error] ${d.toString().trim()}`));
+            updateProcess.stdout.on('data', d => console.log(`[ClickUp] ${d.toString().trim()}`));
+            updateProcess.stderr.on('data', d => console.error(`[ClickUp Error] ${d.toString().trim()}`));
 
-        res.json({ success: true, callId, phoneNumber });
+        })().catch(err => console.error("Background Processing Error:", err));
+
+        // --- ASYNC PROCESSING END ---
 
     } catch (error) {
         console.error('Error processing webhook:', error);
