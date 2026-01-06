@@ -63,8 +63,31 @@ async function transcribeAudio(audioUrl) {
         if (process.env.CLOUDTALK_USER && process.env.CLOUDTALK_PASS) {
             console.log('Logging in to CloudTalk Dashboard...');
             try {
-                // Navigate to Dashboard Login (More stable than my.cloudtalk.io redirect)
+                // Navigate to Dashboard Login
                 await page.goto('https://dashboard.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 60000 });
+
+                // Cloudflare Challenge Detection & Solver
+                try {
+                    const title = await page.title();
+                    if (title.includes("Just a moment")) {
+                        console.log("Cloudflare Challenge Detected. Attempting to click turnstile...");
+                        await page.waitForSelector('iframe', { timeout: 10000 });
+
+                        // Try various common Cloudflare checkbox selectors inside frames
+                        const frames = page.frames();
+                        for (const frame of frames) {
+                            try {
+                                const checkbox = await frame.$('input[type="checkbox"]');
+                                if (checkbox) {
+                                    await checkbox.click();
+                                    console.log("Clicked potential Cloudflare checkbox.");
+                                    await new Promise(r => setTimeout(r, 5000));
+                                    break;
+                                }
+                            } catch (e) { }
+                        }
+                    }
+                } catch (e) { console.log("Cloudflare check error (ignoring):", e.message); }
 
                 // Wait for selectors using robust data attributes
                 // Fallback to type/placeholder if data-test-id is missing
