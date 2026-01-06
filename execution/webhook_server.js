@@ -50,13 +50,44 @@ async function transcribeAudio(audioUrl) {
     try {
         console.log(`Resolving audio URL via Puppeteer: ${audioUrl}`);
 
-        // Launch Puppeteer
         const puppeteer = require('puppeteer');
         browser = await puppeteer.launch({
             args: ['--no-sandbox', '--disable-setuid-sandbox'],
             headless: 'new'
         });
         const page = await browser.newPage();
+
+        // --- LOGIN FLOW START ---
+        if (process.env.CLOUDTALK_USER && process.env.CLOUDTALK_PASS) {
+            console.log('Logging in to CloudTalk Dashboard...');
+            try {
+                await page.goto('https://my.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 30000 });
+
+                // Wait for selectors
+                await page.waitForSelector('input[name="email"]', { timeout: 10000 });
+
+                // Type Credentials
+                await page.type('input[name="email"]', process.env.CLOUDTALK_USER);
+                await page.type('input[name="password"]', process.env.CLOUDTALK_PASS);
+
+                // Click Login
+                await Promise.all([
+                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }),
+                    page.click('button[type="submit"]')
+                ]);
+                console.log('✓ Login submitted. Navigation complete.');
+
+                // Optional: Verify if login failed (check for error message)
+                // But for now assume success if we navigated
+            } catch (e) {
+                console.warn(`Login attempt failed (continuing anonymously just in case): ${e.message}`);
+                // Capture screenshot on failure if possible?
+            }
+        } else {
+            console.warn('No CloudTalk credentials in .env. Attempting public access (likely to fail).');
+        }
+        // --- LOGIN FLOW END ---
+
 
         // Intercept network requests to find the audio file
         let finalAudioUrl = null;
@@ -70,40 +101,55 @@ async function transcribeAudio(audioUrl) {
             request.continue();
         });
 
-        // Navigate to page
-        console.log('Navigating to page...');
+        // Navigate to recording page
+        console.log(`Navigating to recording page: ${audioUrl}`);
         try {
             await page.goto(audioUrl, { waitUntil: 'networkidle2', timeout: 30000 });
         } catch (e) {
             console.log('Navigation timeout or error (continuing if URL found):', e.message);
         }
 
-        // If not found via network, try extracting from DOM
+        // If not found via network, try extracting from DOM (some players put src in audio tag after load)
         if (!finalAudioUrl) {
             console.log('Searching DOM for audio source...');
-            finalAudioUrl = await page.evaluate(() => {
-                const audio = document.querySelector('audio');
-                if (audio) return audio.src;
-                const source = document.querySelector('source');
-                if (source) return source.src;
-                // fallback regex on body
-                const match = document.body.innerHTML.match(/https:\/\/[^"']+\.(mp3|wav)/);
-                return match ? match[0] : null;
-            });
+            try {
+                // Wait a bit for player to render
+                await new Promise(r => setTimeout(r, 2000));
+
+                finalAudioUrl = await page.evaluate(() => {
+                    const audio = document.querySelector('audio');
+                    if (audio) return audio.src;
+                    const source = document.querySelector('source');
+                    if (source) return source.src;
+                    // fallback regex on body
+                    const match = document.body.innerHTML.match(/https:\/\/[^"']+\.(mp3|wav)/);
+                    return match ? match[0] : null;
+                });
+            } catch (e) { /* ignore dom errors */ }
         }
 
         if (!finalAudioUrl) {
-            console.log('❌ Could not find audio URL on page (Login required? or not loaded).');
-            // Try original URL as last resort if it matches file pattern
+            console.log('❌ Could not find audio URL on page.');
+            // Try original URL as last resort if it looks like a file (unlikely here)
             if (audioUrl.match(/\.(mp3|wav)$/)) finalAudioUrl = audioUrl;
             else throw new Error("Could not extract audio source from page.");
         }
 
         console.log(`Downloading audio for transcription from: ${finalAudioUrl}`);
 
-        // Use axios to download the extracted URL (it might be signed S3)
-        // Note: S3 links usually work without cookies if they have query params
-        const response = await axios.get(finalAudioUrl, { responseType: 'stream' });
+        // Use axios to download. Need cookies if it's signed?
+        // Puppeteer cookies -> Axios?
+        // Actually, usually signed S3 links (long params) are public for a short time.
+        // If not, we download using Puppeteer page content? No, binary is hard.
+        // Let's copy cookies from Puppeteer to Axios just in case.
+
+        const cookies = await page.cookies();
+        const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
+
+        const response = await axios.get(finalAudioUrl, {
+            responseType: 'stream',
+            headers: { Cookie: cookieString }
+        });
 
         const writer = fs.createWriteStream(tempAudioPath);
         response.data.pipe(writer);
