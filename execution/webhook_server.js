@@ -110,7 +110,9 @@ async function transcribeAudio(callId) {
     }
 
     if (!downloaded) {
-        console.warn("Failed to download recording from all candidates.");
+        console.warn("⚠️ Could not download recording via CloudTalk API.");
+        console.warn("   CloudTalk does not expose a direct audio file URL via their public API.");
+        console.warn("   Options: Contact CloudTalk support for premium API access or Conversation Intelligence tier.");
         if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
         return null;
     }
