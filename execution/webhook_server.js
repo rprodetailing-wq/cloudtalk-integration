@@ -425,7 +425,6 @@ app.get('/probe', async (req, res) => {
     console.log('Starting CloudTalk API Probe...');
     const API_KEY = process.env.CLOUDTALK_API_KEY;
     const API_SECRET = process.env.CLOUDTALK_API_SECRET;
-    const BASE_URL = 'https://my.cloudtalk.io/api';
 
     if (!API_KEY || !API_SECRET) {
         return res.status(500).json({ error: 'Missing Credentials in Environment' });
@@ -436,35 +435,62 @@ app.get('/probe', async (req, res) => {
     const log = (msg) => { console.log(msg); logs.push(msg); };
 
     try {
-        log('1. Fetching Calls...');
-        const callsRes = await axios.get(`${BASE_URL}/calls.json?per_page=5`, { auth, validateStatus: null });
-        log(`Calls Status: ${callsRes.status}`);
+        // Try multiple base URLs
+        const baseUrls = [
+            'https://my.cloudtalk.io/api',
+            'https://api.cloudtalk.io/v1',
+            'https://api.cloudtalk.io/api/v1'
+        ];
 
-        const calls = callsRes.data.data;
+        let calls = null;
+        let successfulBaseUrl = null;
+
+        for (const baseUrl of baseUrls) {
+            try {
+                log(`Trying Base URL: ${baseUrl}...`);
+                // Note: v1 API often uses /calls, my.cloudtalk.io uses /calls.json
+                const suffix = baseUrl.includes('my.cloudtalk.io') ? '/calls.json' : '/calls';
+                const url = `${baseUrl}${suffix}?per_page=5`;
+
+                log(`  GET ${url}`);
+                const callsRes = await axios.get(url, { auth, validateStatus: null });
+                log(`  Status: ${callsRes.status}`);
+
+                if (callsRes.status === 200) {
+                    calls = callsRes.data.data || callsRes.data; // handle different envelope structures
+                    successfulBaseUrl = baseUrl;
+                    log(`  ✓ SUCCESS`);
+                    break;
+                }
+            } catch (e) {
+                log(`  Error: ${e.message}`);
+            }
+        }
+
         if (!calls || !Array.isArray(calls) || calls.length === 0) {
-            return res.json({ logs, error: 'No calls found' });
+            return res.json({ logs, error: 'No calls found after trying all base URLs' });
         }
 
         const targetCall = calls.find(c => c.recording_link || (c.Cdr && c.Cdr.recording_link));
-        if (!targetCall) return res.json({ logs, error: 'No calls with recording links' });
+        if (!targetCall) return res.json({ logs, error: 'No calls with recording links found' });
 
         const callId = targetCall.id;
-        const link = targetCall.recording_link || targetCall.Cdr.recording_link;
+        const link = targetCall.recording_link || (targetCall.Cdr ? targetCall.Cdr.recording_link : null);
         log(`Target Call ID: ${callId}`);
         log(`Dashboard Link: ${link}`);
 
-        // Test Endpoint Guesses
+        // Test Endpoint Guesses based on successful base URL
         const endpoints = [
-            `${BASE_URL}/calls/${callId}/recording`,
-            `${BASE_URL}/calls/${callId}/recording.mp3`,
-            `${BASE_URL}/calls/${callId}/recording.wav`,
-            `https://api.cloudtalk.io/v1/calls/${callId}/recording`,
-            link // Try original link with auth
+            link, // Try original link with auth
+            `${successfulBaseUrl}/calls/${callId}/recording`,
+            `${successfulBaseUrl}/calls/${callId}/recording.mp3`,
+            `https://api.cloudtalk.io/v1/calls/${callId}/recording`
         ];
 
         const results = {};
 
         for (const url of endpoints) {
+            if (!url) continue;
             try {
                 log(`Trying GET ${url} ...`);
                 const testRes = await axios.get(url, {
