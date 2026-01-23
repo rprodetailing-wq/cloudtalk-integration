@@ -431,6 +431,10 @@ app.get('/probe', async (req, res) => {
             streamLink, // If we found a stream link
             `${successfulBaseUrl}/calls/${callId}/recording`,
             `${successfulBaseUrl}/calls/${callId}/recording.mp3`, // Common pattern
+
+            // Explicitly try V1 API even if 'my.cloudtalk.io' was the successful base
+            `https://api.cloudtalk.io/v1/calls/${callId}/recording`,
+
             // Try fetching the single call details again, maybe it has more data than the list view
             `${successfulBaseUrl}/calls/${callId}.json`,
             `https://my.cloudtalk.io/api/recordings/${callId}`,
@@ -457,8 +461,17 @@ app.get('/probe', async (req, res) => {
                     location: testRes.headers['location']
                 };
                 log(`  -> Status: ${testRes.status}, Type: ${testRes.headers['content-type']}`);
-                if (testRes.status === 302 || testRes.status === 307) {
-                    log(`  -> Redirects to: ${testRes.headers['location'].substring(0, 50)}...`);
+
+                if (testRes.status === 200) {
+                    // Log the body to see if we can find the URL in json
+                    try {
+                        const bodyPrev = JSON.stringify(testRes.data);
+                        log(`  -> Body: ${bodyPrev.substring(0, 1000)}...`); // Log first 1000 chars
+                    } catch (e) { log('  -> Body: (Not JSON)'); }
+                }
+
+                if (testRes.status === 302 || testRes.status === 307 || testRes.status === 301) {
+                    log(`  -> Redirects to: ${testRes.headers['location']}`);
                 }
             } catch (e) {
                 results[url] = { error: e.message };
