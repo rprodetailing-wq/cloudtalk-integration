@@ -420,6 +420,80 @@ app.post('/cloudtalk/transcription', async (req, res) => {
     }
 });
 
+// Probe CloudTalk API for recording access
+app.get('/probe', async (req, res) => {
+    console.log('Starting CloudTalk API Probe...');
+    const API_KEY = process.env.CLOUDTALK_API_KEY;
+    const API_SECRET = process.env.CLOUDTALK_API_SECRET;
+    const BASE_URL = 'https://my.cloudtalk.io/api';
+
+    if (!API_KEY || !API_SECRET) {
+        return res.status(500).json({ error: 'Missing Credentials in Environment' });
+    }
+
+    const auth = { username: API_KEY, password: API_SECRET };
+    const logs = [];
+    const log = (msg) => { console.log(msg); logs.push(msg); };
+
+    try {
+        log('1. Fetching Calls...');
+        const callsRes = await axios.get(`${BASE_URL}/calls.json?per_page=5`, { auth, validateStatus: null });
+        log(`Calls Status: ${callsRes.status}`);
+
+        const calls = callsRes.data.data;
+        if (!calls || !Array.isArray(calls) || calls.length === 0) {
+            return res.json({ logs, error: 'No calls found' });
+        }
+
+        const targetCall = calls.find(c => c.recording_link || (c.Cdr && c.Cdr.recording_link));
+        if (!targetCall) return res.json({ logs, error: 'No calls with recording links' });
+
+        const callId = targetCall.id;
+        const link = targetCall.recording_link || targetCall.Cdr.recording_link;
+        log(`Target Call ID: ${callId}`);
+        log(`Dashboard Link: ${link}`);
+
+        // Test Endpoint Guesses
+        const endpoints = [
+            `${BASE_URL}/calls/${callId}/recording`,
+            `${BASE_URL}/calls/${callId}/recording.mp3`,
+            `${BASE_URL}/calls/${callId}/recording.wav`,
+            `https://api.cloudtalk.io/v1/calls/${callId}/recording`,
+            link // Try original link with auth
+        ];
+
+        const results = {};
+
+        for (const url of endpoints) {
+            try {
+                log(`Trying GET ${url} ...`);
+                const testRes = await axios.get(url, {
+                    auth,
+                    validateStatus: null,
+                    maxRedirects: 0 // We want to see if it redirects to S3
+                });
+                results[url] = {
+                    status: testRes.status,
+                    type: testRes.headers['content-type'],
+                    location: testRes.headers['location']
+                };
+                log(`  -> Status: ${testRes.status}, Type: ${testRes.headers['content-type']}`);
+                if (testRes.status === 302 || testRes.status === 307) {
+                    log(`  -> Redirects to: ${testRes.headers['location'].substring(0, 50)}...`);
+                }
+            } catch (e) {
+                results[url] = { error: e.message };
+            }
+        }
+
+        res.json({ logs, results });
+
+    } catch (error) {
+        log(`Probe Fatal Error: ${error.message}`);
+        res.status(500).json({ logs, error: error.message });
+    }
+});
+
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 app.get('/', (req, res) => res.send('<h1>CloudTalk to ClickUp Webhook Server</h1><p>Running with AI Transcription Support (OpenAI Whisper)</p>'));
 
