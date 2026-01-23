@@ -482,21 +482,47 @@ app.get('/probe', async (req, res) => {
             return res.json({ logs, error: 'No calls found after trying all base URLs' });
         }
 
-        const targetCall = calls.find(c => c.recording_link || (c.Cdr && c.Cdr.recording_link));
-        if (!targetCall) return res.json({ logs, error: 'No calls with recording links found' });
+        // Try to find one with a recording link, otherwise just take the first one
+        let targetCall = calls.find(c => c.recording_link || (c.Cdr && c.Cdr.recording_link));
+        if (!targetCall) {
+            log("No call with explicit 'recording_link' found. Using the first call in the list.");
+            targetCall = calls[0];
+        }
 
-        const callId = targetCall.id;
-        const link = targetCall.recording_link || (targetCall.Cdr ? targetCall.Cdr.recording_link : null);
+        const callId = targetCall.id || (targetCall.Cdr ? targetCall.Cdr.id : null);
+
+        // Extract known links if they exist
+        const link = targetCall.recording_link || (targetCall.Cdr ? targetCall.Cdr.recording_link : null); // often dashboard link
+        const streamLink = targetCall.recording || (targetCall.Cdr ? targetCall.Cdr.recording : null);
+
         log(`Target Call ID: ${callId}`);
-        log(`Dashboard Link: ${link}`);
+        if (targetCall.Cdr) {
+            // Log useful keys from Cdr to identify field names
+            log(`Cdr Keys: ${Object.keys(targetCall.Cdr).filter(k => k.includes('rec') || k.includes('url') || k.includes('link')).join(', ')}`);
+        }
+
+        log(`Existing Link Property: ${link}`);
+        log(`Existing Stream Property: ${streamLink}`);
+
+        if (!callId) {
+            return res.json({ logs, error: 'Could not extract ID from call object', sample: targetCall });
+        }
 
         // Test Endpoint Guesses based on successful base URL
+        // We want to find the AUDIO FILE.
         const endpoints = [
-            link,
+            link, // Dashboard link (likely redirects)
+            streamLink, // If we found a stream link
             `${successfulBaseUrl}/calls/${callId}/recording`,
-            `${successfulBaseUrl}/calls/${callId}/recording.mp3`,
-            `https://api.cloudtalk.io/v1/calls/${callId}/recording`
-        ];
+            `${successfulBaseUrl}/calls/${callId}/recording.mp3`, // Common pattern
+            // Try fetching the single call details again, maybe it has more data than the list view
+            `${successfulBaseUrl}/calls/${callId}.json`,
+            `https://my.cloudtalk.io/api/recordings/${callId}`,
+            `https://my.cloudtalk.io/api/calls/index.json?call_id=${callId}`,
+            // Try transcript endpoint just in case
+            `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${callId}`
+        ].filter(u => u); // filter out nulls
+
 
         const results = {};
 
