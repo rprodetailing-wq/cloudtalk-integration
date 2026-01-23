@@ -435,7 +435,6 @@ app.get('/probe', async (req, res) => {
     const log = (msg) => { console.log(msg); logs.push(msg); };
 
     try {
-        // Try multiple base URLs
         const baseUrls = [
             'https://my.cloudtalk.io/api',
             'https://api.cloudtalk.io/v1'
@@ -445,9 +444,9 @@ app.get('/probe', async (req, res) => {
         let successfulBaseUrl = null;
 
         for (const baseUrl of baseUrls) {
-            // Try both with and without .json extension for my.cloudtalk.io
+            // Try explicit endpoint variations
             const suffixes = baseUrl.includes('my.cloudtalk.io')
-                ? ['/calls.json', '/calls']
+                ? ['/calls/index.json', '/calls.json']
                 : ['/calls'];
 
             for (const suffix of suffixes) {
@@ -464,7 +463,7 @@ app.get('/probe', async (req, res) => {
                     }
 
                     if (callsRes.status === 200) {
-                        calls = callsRes.data.data || callsRes.data;
+                        calls = callsRes.data.data || callsRes.data.responseData?.data || callsRes.data;
                         successfulBaseUrl = baseUrl;
                         log(`  ✓ SUCCESS`);
                         break;
@@ -493,7 +492,7 @@ app.get('/probe', async (req, res) => {
 
         // Test Endpoint Guesses based on successful base URL
         const endpoints = [
-            link, // Try original link with auth
+            link,
             `${successfulBaseUrl}/calls/${callId}/recording`,
             `${successfulBaseUrl}/calls/${callId}/recording.mp3`,
             `https://api.cloudtalk.io/v1/calls/${callId}/recording`
