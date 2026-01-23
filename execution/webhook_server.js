@@ -38,166 +38,84 @@ function logWebhook(data, source) {
 }
 
 // Helper: Transcribe Audio with OpenAI Whisper
-async function transcribeAudio(audioUrl) {
+async function transcribeAudio(callId) {
     if (!process.env.OPENAI_API_KEY) {
         console.log("Skipping AI Transcription: No OPENAI_API_KEY found.");
         return null;
     }
 
-    const tempAudioPath = path.join(__dirname, '..', '.tmp', `audio_temp_${Date.now()}.mp3`);
-    let browser = null;
+    const tempAudioPath = path.join(__dirname, '..', '.tmp', `audio_temp_${callId}_${Date.now()}.mp3`);
+
+    // CloudTalk credentials
+    const API_KEY = process.env.CLOUDTALK_API_KEY;
+    const API_SECRET = process.env.CLOUDTALK_API_SECRET;
+    if (!API_KEY || !API_SECRET) {
+        console.warn("Missing CloudTalk credentials for recording fetch.");
+        return null;
+    }
+    const auth = { username: API_KEY, password: API_SECRET };
+
+    // Potential Endpoints - Iterate to find which one works
+    const candidates = [
+        `https://my.cloudtalk.io/api/calls/${callId}/recording.mp3`,
+        `https://my.cloudtalk.io/api/calls/${callId}/recording`,
+        `https://api.cloudtalk.io/v1/calls/${callId}/recording`,
+        `https://my.cloudtalk.io/api/recordings/${callId}.mp3`
+    ];
+
+    let downloaded = false;
+
+    console.log(`Attempting to fetch recording for Call ID: ${callId}`);
+
+    for (const url of candidates) {
+        try {
+            console.log(`Trying ${url}...`);
+            const response = await axios.get(url, {
+                responseType: 'stream',
+                auth,
+                validateStatus: status => status === 200
+            });
+
+            // Validate content type to avoid downloading HTML 404 pages that return 200 (if any)
+            const contentType = response.headers['content-type'];
+            if (contentType && (contentType.includes('text/html') || contentType.includes('application/json'))) {
+                console.log(`  -> Valid status but invalid content-type: ${contentType}`);
+                // drain stream
+                response.data.resume();
+                continue;
+            }
+
+            const writer = fs.createWriteStream(tempAudioPath);
+            response.data.pipe(writer);
+
+            await new Promise((resolve, reject) => {
+                writer.on('finish', resolve);
+                writer.on('error', reject);
+            });
+
+            // Check file size - ignore tiny files (e.g. empty responses)
+            const stats = fs.statSync(tempAudioPath);
+            if (stats.size < 1000) {
+                console.log(`  -> File too small (${stats.size} bytes), likely error/empty.`);
+                if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+                continue;
+            }
+
+            console.log(`✓ Downloaded audio from ${url} (${stats.size} bytes)`);
+            downloaded = true;
+            break;
+        } catch (e) {
+            console.log(`  -> Failed: ${e.message}`);
+        }
+    }
+
+    if (!downloaded) {
+        console.warn("Failed to download recording from all candidates.");
+        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+        return null;
+    }
 
     try {
-        console.log(`Resolving audio URL via Puppeteer: ${audioUrl}`);
-
-        const puppeteer = require('puppeteer-extra');
-        const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-        puppeteer.use(StealthPlugin());
-        browser = await puppeteer.launch({
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            headless: 'new'
-        });
-        const page = await browser.newPage();
-
-        // --- LOGIN FLOW START ---
-        if (process.env.CLOUDTALK_USER && process.env.CLOUDTALK_PASS) {
-            console.log('Logging in to CloudTalk Dashboard...');
-            try {
-                // Navigate to Dashboard Login
-                await page.goto('https://dashboard.cloudtalk.io/login', { waitUntil: 'networkidle2', timeout: 60000 });
-
-                // Cloudflare Challenge Detection & Solver
-                try {
-                    const title = await page.title();
-                    if (title.includes("Just a moment")) {
-                        console.log("Cloudflare Challenge Detected. Attempting to click turnstile...");
-                        await page.waitForSelector('iframe', { timeout: 10000 });
-
-                        // Try various common Cloudflare checkbox selectors inside frames
-                        const frames = page.frames();
-                        for (const frame of frames) {
-                            try {
-                                const checkbox = await frame.$('input[type="checkbox"]');
-                                if (checkbox) {
-                                    await checkbox.click();
-                                    console.log("Clicked potential Cloudflare checkbox.");
-                                    await new Promise(r => setTimeout(r, 5000));
-                                    break;
-                                }
-                            } catch (e) { }
-                        }
-                    }
-                } catch (e) { console.log("Cloudflare check error (ignoring):", e.message); }
-
-                // Wait for selectors using robust data attributes
-                // Fallback to type/placeholder if data-test-id is missing
-                const emailSelector = 'input[data-test-id="EmailField"]';
-                const passSelector = 'input[data-test-id="PasswordField"]';
-                const submitSelector = 'button[type="submit"]';
-
-                try {
-                    await page.waitForSelector(emailSelector, { timeout: 30000 });
-                } catch (e) {
-                    console.log("Standard selector failed, trying broad input wait...");
-                    await page.waitForSelector('input[type="text"]', { timeout: 10000 });
-                }
-
-                // Type Credentials
-                // Use type() with delay to mimic human behavior (helps bot detection)
-                await page.type(emailSelector, process.env.CLOUDTALK_USER, { delay: 50 });
-                await page.type(passSelector, process.env.CLOUDTALK_PASS, { delay: 50 });
-
-                // Click Login
-                await Promise.all([
-                    page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }),
-                    page.click(submitSelector)
-                ]);
-                console.log('✓ Login submitted. Navigation complete.');
-            } catch (e) {
-                console.warn(`Login attempt failed: ${e.message}`);
-                try {
-                    const title = await page.title();
-                    console.log(`[DEBUG] Page Title: ${title}`);
-                    const content = await page.content();
-                    console.log(`[DEBUG] Page Content: ${content.substring(0, 500)}...`);
-                } catch (err) { }
-            }
-        } else {
-            console.warn('No CloudTalk credentials in .env. Attempting public access (likely to fail).');
-        }
-        // --- LOGIN FLOW END ---
-
-
-        // Intercept network requests to find the audio file
-        let finalAudioUrl = null;
-        await page.setRequestInterception(true);
-
-        page.on('request', request => {
-            if (['media'].includes(request.resourceType()) || request.url().endsWith('.mp3') || request.url().endsWith('.wav')) {
-                console.log('Intercepted potential audio URL:', request.url());
-                if (!finalAudioUrl) finalAudioUrl = request.url();
-            }
-            request.continue();
-        });
-
-        // Navigate to recording page
-        console.log(`Navigating to recording page: ${audioUrl}`);
-        try {
-            await page.goto(audioUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-        } catch (e) {
-            console.log('Navigation timeout or error (continuing if URL found):', e.message);
-        }
-
-        // If not found via network, try extracting from DOM (some players put src in audio tag after load)
-        if (!finalAudioUrl) {
-            console.log('Searching DOM for audio source...');
-            try {
-                // Wait a bit for player to render
-                await new Promise(r => setTimeout(r, 2000));
-
-                finalAudioUrl = await page.evaluate(() => {
-                    const audio = document.querySelector('audio');
-                    if (audio) return audio.src;
-                    const source = document.querySelector('source');
-                    if (source) return source.src;
-                    // fallback regex on body
-                    const match = document.body.innerHTML.match(/https:\/\/[^"']+\.(mp3|wav)/);
-                    return match ? match[0] : null;
-                });
-            } catch (e) { /* ignore dom errors */ }
-        }
-
-        if (!finalAudioUrl) {
-            console.log('❌ Could not find audio URL on page.');
-            // Try original URL as last resort if it looks like a file (unlikely here)
-            if (audioUrl.match(/\.(mp3|wav)$/)) finalAudioUrl = audioUrl;
-            else throw new Error("Could not extract audio source from page.");
-        }
-
-        console.log(`Downloading audio for transcription from: ${finalAudioUrl}`);
-
-        // Use axios to download. Need cookies if it's signed?
-        // Puppeteer cookies -> Axios?
-        // Actually, usually signed S3 links (long params) are public for a short time.
-        // If not, we download using Puppeteer page content? No, binary is hard.
-        // Let's copy cookies from Puppeteer to Axios just in case.
-
-        const cookies = await page.cookies();
-        const cookieString = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-
-        const response = await axios.get(finalAudioUrl, {
-            responseType: 'stream',
-            headers: { Cookie: cookieString }
-        });
-
-        const writer = fs.createWriteStream(tempAudioPath);
-        response.data.pipe(writer);
-
-        await new Promise((resolve, reject) => {
-            writer.on('finish', resolve);
-            writer.on('error', reject);
-        });
-
         console.log(`Sending to OpenAI Whisper...`);
         const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -215,8 +133,6 @@ async function transcribeAudio(audioUrl) {
         console.error("OpenAI Transcription logic failed:", error.message);
         if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
         return null;
-    } finally {
-        if (browser) await browser.close();
     }
 }
 
@@ -367,7 +283,7 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             // 3. OpenAI Whisper Transcription (if still no text)
             if ((!transcriptData.transcript || transcriptData.transcript === 'null') && transcriptData.recording_link) {
                 console.log("No native transcript. Attempting AI transcription (OpenAI)...");
-                const aiText = await transcribeAudio(transcriptData.recording_link);
+                const aiText = await transcribeAudio(callId);
                 if (aiText) {
                     transcriptData.transcript = `[AI Transcription (OpenAI Whisper)]\n\n${aiText}`;
                 }

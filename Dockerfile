@@ -1,26 +1,7 @@
 # Use Node 20
 FROM node:20
 
-# Install dependencies for Puppeteer
-RUN apt-get update && apt-get install -y \
-    chromium \
-    libnss3 \
-    libatk-bridge2.0-0 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxi6 \
-    libxtst6 \
-    libnss3 \
-    libcups2 \
-    libxss1 \
-    libxrandr2 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libatk1.0-0 \
-    libgtk-3-0 \
-    && rm -rf /var/lib/apt/lists/*
+# System dependencies removed - Puppeteer no longer used
 
 # Tell Puppeteer to skip installing Chrome (we'll use installed package or let it bundle, 
 # but usually in Docker we want to use the system chromium or ensure deps are present)
