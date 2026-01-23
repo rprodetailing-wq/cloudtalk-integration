@@ -413,8 +413,8 @@ app.get('/probe', async (req, res) => {
 
         log(`Target Call ID: ${callId}`);
         if (targetCall.Cdr) {
-            // Log useful keys from Cdr to identify field names
-            log(`Cdr Keys: ${Object.keys(targetCall.Cdr).filter(k => k.includes('rec') || k.includes('url') || k.includes('link')).join(', ')}`);
+            // Log ALL keys from Cdr to find any hidden audio-related field
+            log(`All Cdr Keys: ${Object.keys(targetCall.Cdr).join(', ')}`);
         }
 
         log(`Existing Link Property: ${link}`);
