@@ -438,33 +438,45 @@ app.get('/probe', async (req, res) => {
         // Try multiple base URLs
         const baseUrls = [
             'https://my.cloudtalk.io/api',
-            'https://api.cloudtalk.io/v1',
-            'https://api.cloudtalk.io/api/v1'
+            'https://api.cloudtalk.io/v1'
         ];
 
         let calls = null;
         let successfulBaseUrl = null;
 
         for (const baseUrl of baseUrls) {
-            try {
-                log(`Trying Base URL: ${baseUrl}...`);
-                // Note: v1 API often uses /calls, my.cloudtalk.io uses /calls.json
-                const suffix = baseUrl.includes('my.cloudtalk.io') ? '/calls.json' : '/calls';
-                const url = `${baseUrl}${suffix}?per_page=5`;
+            // Try both with and without .json extension for my.cloudtalk.io
+            const suffixes = baseUrl.includes('my.cloudtalk.io')
+                ? ['/calls.json', '/calls']
+                : ['/calls'];
 
-                log(`  GET ${url}`);
-                const callsRes = await axios.get(url, { auth, validateStatus: null });
-                log(`  Status: ${callsRes.status}`);
+            for (const suffix of suffixes) {
+                try {
+                    const url = `${baseUrl}${suffix}?per_page=5`;
+                    log(`Trying GET ${url} ...`);
 
-                if (callsRes.status === 200) {
-                    calls = callsRes.data.data || callsRes.data; // handle different envelope structures
-                    successfulBaseUrl = baseUrl;
-                    log(`  ✓ SUCCESS`);
-                    break;
+                    const callsRes = await axios.get(url, { auth, validateStatus: null });
+                    log(`  Status: ${callsRes.status}`);
+
+                    if (callsRes.data) {
+                        const bodySnippet = JSON.stringify(callsRes.data).substring(0, 200);
+                        log(`  Body: ${bodySnippet}`);
+                    }
+
+                    if (callsRes.status === 200) {
+                        calls = callsRes.data.data || callsRes.data;
+                        successfulBaseUrl = baseUrl;
+                        log(`  ✓ SUCCESS`);
+                        break;
+                    }
+                } catch (e) {
+                    log(`  Error: ${e.message}`);
+                    if (e.response && e.response.data) {
+                        log(`  Resp: ${JSON.stringify(e.response.data).substring(0, 100)}`);
+                    }
                 }
-            } catch (e) {
-                log(`  Error: ${e.message}`);
             }
+            if (calls) break;
         }
 
         if (!calls || !Array.isArray(calls) || calls.length === 0) {
