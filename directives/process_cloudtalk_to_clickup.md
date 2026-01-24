@@ -6,7 +6,7 @@ This directive outlines the process of fetching call transcripts from CloudTalk,
 Automate the flow from a customer call to a proposal task in the project management system.
 
 ## Tools
-- `execution/fetch_cloudtalk_transcripts.js`: Retrieving data.
+- `execution/fetch_cloudtalk_transcripts.js`: Retrieve fetching data.
 - `execution/generate_proposal.js`: Data processing/formatting.
 - `execution/update_clickup_task.js`: Data submission (Search & Update).
 

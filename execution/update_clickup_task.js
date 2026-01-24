@@ -169,11 +169,11 @@ async function main() {
             // Proceeding to create text/doc if possible, or just log
         }
 
-        // 3. Update Task
+        // 3. Update Task Description and Custom Fields
         // Depending on tool capabilities, we might use 'update_task' or 'set_custom_field'
-        // Let's assume 'set_custom_field_value' or generic 'update_task' with custom_fields arg
         const tools = await client.listTools();
         const setFieldTool = tools.tools.find(t => t.name.includes("set_custom_field"));
+        const updateTaskTool = tools.tools.find(t => t.name.includes("update_task"));
 
         // Helper to update field
         const updateField = async (fieldId, value) => {
@@ -193,9 +193,28 @@ async function main() {
         };
 
         if (transcriptField) {
-            // In a real app, maybe upload file and link? For now, pasting text or mocking functionality.
-            // If Text field:
+            // Update Custom Field
             await updateField(transcriptField.id, transcriptData.transcript);
+        }
+
+        // Update Description
+        if (updateTaskTool) {
+            console.log("Updating Task Description...");
+            let currentDescription = matchedTask.description || "";
+            // Avoid duplicating if already present
+            if (!currentDescription.includes(transcriptData.transcript.substring(0, 50))) {
+                const newDescription = `${currentDescription}\n\n## Transcript\n\n${transcriptData.transcript}`;
+                await client.callTool({
+                    name: updateTaskTool.name,
+                    arguments: {
+                        task_id: matchedTask.id,
+                        description: newDescription
+                    }
+                });
+                console.log("Task Description updated.");
+            } else {
+                console.log("Transcript already in description. Skipping.");
+            }
         }
 
         if (proposalField && proposalContent) {

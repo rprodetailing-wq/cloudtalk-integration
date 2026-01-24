@@ -72,7 +72,7 @@ async function main() {
             arguments: {
                 list_id: listId,
                 name: taskName,
-                description: `Created via CloudTalk Webhook\n\nCall ID: ${transcriptData.id}\nDate: ${transcriptData.date}`,
+                description: `Created via CloudTalk Webhook\n\nCall ID: ${transcriptData.id}\nDate: ${transcriptData.date}\n\n## Transcript\n\n${transcriptText}`,
                 status: status
             }
         });

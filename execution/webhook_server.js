@@ -216,6 +216,63 @@ app.post('/cloudtalk/transcription', async (req, res) => {
         res.status(202).json({ success: true, message: 'Processing started', callId });
 
         // Continue processing in background
+        // Helper to format CloudTalk CSV
+        const formatCloudTalkCsv = (csvText) => {
+            if (!csvText || typeof csvText !== 'string') return csvText;
+
+            // Basic CSV parser for CloudTalk format: timestamp,in,out
+            // Handles quotes and simple commas
+            try {
+                const lines = csvText.split('\n');
+                let formatted = [];
+
+                // Skip header if present
+                let startIndex = 0;
+                if (lines[0] && lines[0].includes('timestamp')) startIndex = 1;
+
+                for (let i = startIndex; i < lines.length; i++) {
+                    const line = lines[i].trim();
+                    if (!line) continue;
+
+                    // Simple regex to split by comma respecting quotes
+                    const matches = line.match(/(".*?"|[^",\s]+)(?=\s*,|\s*$)/g);
+                    // Fallback split if regex fails or simple structure
+                    const parts = matches || line.split(',');
+
+                    if (parts.length >= 3) {
+                        // CloudTalk CSV usually: timestamp, in_channel (Caller), out_channel (Agent)
+                        // Note: "in" is usually the caller (Client), "out" is the agent
+                        let time = parts[0].replace(/"/g, '').trim(); // timestamp
+                        let incoming = parts[1] ? parts[1].replace(/^"|"$/g, '').trim() : ''; // Client
+                        let outgoing = parts[2] ? parts[2].replace(/^"|"$/g, '').trim() : ''; // Agent
+
+                        // Format seconds to MM:SS
+                        const totalSeconds = parseInt(time, 10);
+                        if (!isNaN(totalSeconds)) {
+                            const m = Math.floor(totalSeconds / 60);
+                            const s = totalSeconds % 60;
+                            time = `${m}:${s.toString().padStart(2, '0')}`;
+                        }
+
+                        if (outgoing) {
+                            formatted.push(`**Agent:** ${outgoing}`);
+                        }
+                        if (incoming) {
+                            formatted.push(`**Client:** ${incoming}`);
+                        }
+                    }
+                }
+
+                if (formatted.length > 0) {
+                    return formatted.join('\n\n');
+                }
+                return csvText; // Return original if parsing fails to find structure
+            } catch (e) {
+                console.error('Error parsing CSV transcript:', e);
+                return csvText; // Fallback to raw text
+            }
+        };
+
         (async () => {
             console.log('Starting background processing for callId:', callId);
 
@@ -223,13 +280,22 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             const transcriptDir = path.join(__dirname, '..', '.tmp', 'transcripts');
             if (!fs.existsSync(transcriptDir)) fs.mkdirSync(transcriptDir, { recursive: true });
 
+            // Normalize transcription field (handle object vs string)
+            let rawTranscript = typeof transcription === 'string' ? transcription : JSON.stringify(transcription);
+
+            // Check if it looks like CSV (has "timestamp,in,out" or similar patterns)
+            let formattedTranscript = rawTranscript;
+            if (rawTranscript && (rawTranscript.includes('timestamp,in,out') || rawTranscript.includes('timestamp, in, out'))) {
+                formattedTranscript = formatCloudTalkCsv(rawTranscript);
+            }
+
             const transcriptData = {
                 id: callId,
                 uuid: callUuid,
                 phone_number: phoneNumber,
                 client: data.contacts?.name || 'Unknown',
                 date: new Date().toISOString(),
-                transcript: typeof transcription === 'string' ? transcription : JSON.stringify(transcription),
+                transcript: formattedTranscript,
                 recording_link: data.recording_link || null,
                 raw: data
             };
