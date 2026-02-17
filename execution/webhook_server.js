@@ -37,6 +37,27 @@ function logWebhook(data, source) {
     return logFile;
 }
 
+// Helper: Sleep
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Helper: Fetch with Retry
+async function fetchWithRetry(fn, retries = 3, initialDelay = 2000, description = 'Operation') {
+    let delay = initialDelay;
+    for (let i = 0; i < retries; i++) {
+        try {
+            return await fn();
+        } catch (error) {
+            // If it's the last attempt, throw
+            if (i === retries - 1) throw error;
+
+            console.log(`⚠️ ${description} failed (Attempt ${i + 1}/${retries}): ${error.message}`);
+            console.log(`   Retrying in ${delay}ms...`);
+            await sleep(delay);
+            delay *= 2; // Exponential backoff
+        }
+    }
+}
+
 // Helper: Transcribe Audio with OpenAI Whisper
 async function transcribeAudio(callId) {
     if (!process.env.OPENAI_API_KEY) {
@@ -67,46 +88,63 @@ async function transcribeAudio(callId) {
 
     console.log(`Attempting to fetch recording for Call ID: ${callId}`);
 
-    for (const url of candidates) {
-        try {
-            console.log(`Trying ${url}...`);
-            const response = await axios.get(url, {
-                responseType: 'stream',
-                auth,
-                validateStatus: status => status === 200
-            });
+    // Wrapper to try all candidates with a retry mechanism for the *set* of candidates
+    // If the recording isn't ready, all candidates might fail.
+    try {
+        await fetchWithRetry(async () => {
+            let success = false;
+            // Try each candidate
+            for (const url of candidates) {
+                try {
+                    console.log(`Trying ${url}...`);
+                    const response = await axios.get(url, {
+                        responseType: 'stream',
+                        auth,
+                        validateStatus: status => status === 200
+                    });
 
-            // Validate content type to avoid downloading HTML 404 pages that return 200 (if any)
-            const contentType = response.headers['content-type'];
-            if (contentType && (contentType.includes('text/html') || contentType.includes('application/json'))) {
-                console.log(`  -> Valid status but invalid content-type: ${contentType}`);
-                // drain stream
-                response.data.resume();
-                continue;
+                    // Validate content type
+                    const contentType = response.headers['content-type'];
+                    if (contentType && (contentType.includes('text/html') || contentType.includes('application/json'))) {
+                        console.log(`  -> Valid status but invalid content-type: ${contentType}`);
+                        response.data.resume(); // drain
+                        continue;
+                    }
+
+                    const writer = fs.createWriteStream(tempAudioPath);
+                    response.data.pipe(writer);
+
+                    await new Promise((resolve, reject) => {
+                        writer.on('finish', resolve);
+                        writer.on('error', reject);
+                    });
+
+                    // Check file size
+                    const stats = fs.statSync(tempAudioPath);
+                    if (stats.size < 1000) {
+                        console.log(`  -> File too small (${stats.size} bytes), likely error/empty.`);
+                        if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
+                        continue; // try next candidate logic? Or fail this attempt?
+                        // If it's too small, it might be an error response.
+                    }
+
+                    console.log(`✓ Downloaded audio from ${url} (${stats.size} bytes)`);
+                    success = true;
+                    downloaded = true;
+                    break; // Stop trying candidates
+                } catch (e) {
+                    console.log(`  -> Failed: ${e.message}`);
+                }
             }
 
-            const writer = fs.createWriteStream(tempAudioPath);
-            response.data.pipe(writer);
-
-            await new Promise((resolve, reject) => {
-                writer.on('finish', resolve);
-                writer.on('error', reject);
-            });
-
-            // Check file size - ignore tiny files (e.g. empty responses)
-            const stats = fs.statSync(tempAudioPath);
-            if (stats.size < 1000) {
-                console.log(`  -> File too small (${stats.size} bytes), likely error/empty.`);
-                if (fs.existsSync(tempAudioPath)) fs.unlinkSync(tempAudioPath);
-                continue;
+            if (!success) {
+                throw new Error("All recording URL candidates failed.");
             }
 
-            console.log(`✓ Downloaded audio from ${url} (${stats.size} bytes)`);
-            downloaded = true;
-            break;
-        } catch (e) {
-            console.log(`  -> Failed: ${e.message}`);
-        }
+        }, 3, 5000, "Download Audio Recording"); // Retry whole process 3 times, init wait 5s
+
+    } catch (finalErr) {
+        console.error(`❌ Final failure downloading recording: ${finalErr.message}`);
     }
 
     if (!downloaded) {
@@ -325,21 +363,38 @@ app.post('/cloudtalk/transcription', async (req, res) => {
                         } catch (err) { /* ignore */ }
                     }
 
-                    // Try fetching Text from CloudTalk API (Briefly)
+                    // Try fetching Text from CloudTalk API (with Retry)
                     let fetchedText = null;
                     const idsToTry = [];
                     if (validUuid) idsToTry.push(validUuid);
 
+                    // Add a tiny delay before first attempt to let CloudTalk process
+                    await sleep(2000);
+
                     for (const targetId of idsToTry) {
                         const transUrl = `https://my.cloudtalk.io/api/conversation-intelligence/transcription/${targetId}.json`;
+
                         try {
-                            const res = await axios.get(transUrl, { auth });
-                            if (res.data && res.data.text) {
-                                fetchedText = res.data.text;
-                                console.log('✓ Fetched native CloudTalk transcript');
-                                break;
-                            }
-                        } catch (e) { /* ignore 404s */ }
+                            // Wrap axios call in retry logic
+                            // validationStatus: assume 404 means "not ready yet" so we want to throw to trigger retry
+                            await fetchWithRetry(async () => {
+                                const res = await axios.get(transUrl, {
+                                    auth,
+                                    // Treat 404 as an error to trigger retry (default axios behavior)
+                                });
+                                if (res.data && res.data.text) {
+                                    fetchedText = res.data.text;
+                                    console.log('✓ Fetched native CloudTalk transcript');
+                                } else {
+                                    throw new Error("Response missing 'text' field");
+                                }
+                            }, 3, 3000, "Fetch Native Transcript"); // 3 retries, start waiting 3s
+
+                            if (fetchedText) break;
+
+                        } catch (e) {
+                            console.log(`   -> Gave up on native transcript for ID ${targetId}: ${e.message}`);
+                        }
                     }
 
                     if (fetchedText) {
@@ -371,14 +426,60 @@ app.post('/cloudtalk/transcription', async (req, res) => {
             fs.writeFileSync(transcriptFile, JSON.stringify(transcriptData, null, 2));
             console.log(`Transcript saved: ${transcriptFile}`);
 
-            // Generate proposal
+            // Generate Offer (Proposal) using the new Craft Offer architecture
+            console.log('Generating AI Offer...');
+            const templatePath = path.join(__dirname, '..', 'templates', 'offer_framework.txt');
+
+            // Default to a basic proposal if crafting fails
+            let proposalFile = path.join(__dirname, '..', '.tmp', 'proposals', `proposal_${callId}.md`);
+            const fallbackContent = `# Call Proposal\n\n**Call ID:** ${callId}\n**Phone:** ${phoneNumber}\n**Date:** ${new Date().toLocaleDateString()}\n\n## Transcript Summary\n\n${transcriptData.transcript}\n\n## Note\n\nAI Offer generation failed or was skipped. Review transcript manually.`;
+
+            // Ensure proposal dir exists (legacy path, or we can use the new offers path)
             const proposalDir = path.join(__dirname, '..', '.tmp', 'proposals');
             if (!fs.existsSync(proposalDir)) fs.mkdirSync(proposalDir, { recursive: true });
+            fs.writeFileSync(proposalFile, fallbackContent); // Write fallback first
 
-            const proposalContent = `# Call Proposal\n\n**Call ID:** ${callId}\n**Phone:** ${phoneNumber}\n**Date:** ${new Date().toLocaleDateString()}\n\n## Transcript Summary\n\n${transcriptData.transcript}\n\n## Next Steps\n\n- Follow up with customer\n- Document requirements\n- Prepare quote if needed`;
+            if (fs.existsSync(templatePath)) {
+                try {
+                    const craftProcess = spawn('node', [
+                        path.join(__dirname, 'craft_offer.js'),
+                        '--transcript', transcriptFile,
+                        '--template', templatePath
+                    ], {
+                        cwd: path.join(__dirname, '..'),
+                        env: process.env
+                    });
 
-            const proposalFile = path.join(proposalDir, `proposal_${callId}.md`);
-            fs.writeFileSync(proposalFile, proposalContent);
+                    let craftOutput = '';
+                    craftProcess.stdout.on('data', d => {
+                        const str = d.toString();
+                        console.log(`[CraftOffer] ${str.trim()}`);
+                        craftOutput += str;
+                    });
+
+                    craftProcess.stderr.on('data', d => console.error(`[CraftOffer Error] ${d.toString().trim()}`));
+
+                    await new Promise((resolve) => {
+                        craftProcess.on('close', (code) => {
+                            if (code === 0) {
+                                // Extract the output file path from stdout if needed, or just look in known location
+                                const match = craftOutput.match(/__OUTPUT_FILE__:(.+)/);
+                                if (match && match[1]) {
+                                    proposalFile = match[1].trim(); // Point to the new offer file
+                                    console.log(`✓ Offer generation successful. Using: ${proposalFile}`);
+                                }
+                            } else {
+                                console.error(`Offer generation exited with code ${code}. using fallback.`);
+                            }
+                            resolve();
+                        });
+                    });
+                } catch (e) {
+                    console.error("Error executing craft_offer.js:", e);
+                }
+            } else {
+                console.warn("Template file not found. Using fallback proposal.");
+            }
 
             // Spawn ClickUp Update
             console.log('Running ClickUp update...');
